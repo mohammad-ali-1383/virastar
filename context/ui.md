@@ -17,8 +17,21 @@
 8. A copy button for copying the corrected result.
 9. Clear Persian error messages for invalid input or service failures.
 
+## Privacy and Consent
+- Pressing «اصلاح متن» opens a Persian consent dialog **before** any request is sent.
+- The dialog offers exactly two choices, both of which run the correction:
+  - «موافقم، ذخیره شود» — correct the text and allow storing the original and corrected text for
+    quality evaluation.
+  - «فقط متنم را اصلاح کن» — correct the text without storing either text in evaluation logs.
+- Dismissing the dialog (Escape, clicking the backdrop, or the close button) sends nothing and asks
+  for nothing.
+- The dialog explains both choices in plain Persian and never blocks the correction itself.
+- The choice is sent as `store_for_evaluation` and enforced by the backend
+  (`correction-logging.md`); the interface must not claim storage succeeded.
+
 ## Interaction
 - Disable repeated submissions while a request is processing.
+- Ask for consent on every submission; never reuse a previous answer silently.
 - Display validation errors near the input when possible.
 - Display the corrected result only after a successful response.
 - Do not replace the original input with the corrected text.

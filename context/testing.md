@@ -14,9 +14,17 @@
 - The configured limit can be changed through backend configuration.
 - Provider timeouts, authentication errors, rate limits, and server errors map to the documented error codes.
 - Invalid or empty provider responses do not produce false success.
+- Fallback: a successful Groq call never reaches Gemini; every provider-related Groq failure (quota/rate limit, authentication, timeout, connection failure, server error, invalid/empty response) is retried once with Gemini, which returns the correction; each provider is attempted at most once.
+- Fallback: when both providers fail the endpoint returns the generic `503 PROVIDER_UNAVAILABLE` without exposing keys, provider response bodies, or internal detail, in the response or in the logs.
+- Invalid input and over-length text are rejected without calling any provider.
+- Consent logging: `store_for_evaluation: true` appends exactly one JSON Lines record (timestamp, original text, the provider and model that succeeded, corrected output), and the Groq-to-Gemini fallback records Gemini; `false` or an omitted flag writes nothing at all; a non-boolean flag is `400 INVALID_INPUT`.
+- Consent logging: a failed write still returns the correction with `200` and reports the failure as a sanitized warning (no text, keys, or provider bodies).
+- Consent logging tests use temporary log paths and mocked providers, never the real `logs/` file.
 - Responses follow `api-contract.md`.
 
 ## Frontend Tests
+- Run with `cd frontend && npm run test` (Vitest + Testing Library, jsdom).
+- Consent: the dialog appears before any request, each choice sends its own `store_for_evaluation` value, and dismissing the dialog (Escape, backdrop, close button) sends no request.
 - Users can enter and submit Persian text.
 - The character counter updates correctly.
 - The UI communicates the 1000-character limit.

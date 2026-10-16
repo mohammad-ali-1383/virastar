@@ -21,6 +21,7 @@ from app.errors import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
+from app.schemas import CorrectRequest
 from tests.conftest import StubCorrectionService
 
 CORRECT_URL = "/api/v1/correct"
@@ -76,6 +77,44 @@ def test_health_endpoint_still_works(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+# --- Consent flag (`correction-logging.md`) ---------------------------------
+
+
+def test_consent_flag_is_optional_and_defaults_to_not_storing() -> None:
+    assert CorrectRequest(text=PERSIAN_TEXT).store_for_evaluation is False
+
+
+def test_consent_flag_is_documented_in_the_openapi_schema(client: TestClient) -> None:
+    schema = client.get("/openapi.json").json()
+    request_schema = schema["components"]["schemas"]["CorrectRequest"]
+
+    assert "store_for_evaluation" in request_schema["properties"]
+    # Optional: the documented default is the privacy-preserving one.
+    assert "store_for_evaluation" not in request_schema.get("required", [])
+    assert request_schema["properties"]["store_for_evaluation"]["default"] is False
+
+
+def test_a_valid_request_with_either_consent_value_succeeds(
+    client: TestClient, stub_service: StubCorrectionService
+) -> None:
+    stub_service.result = PERSIAN_TEXT
+
+    for store in (True, False):
+        response = client.post(CORRECT_URL, json={"text": PERSIAN_TEXT, "store_for_evaluation": store})
+
+        assert response.status_code == 200
+        assert response.json() == {"corrected_text": PERSIAN_TEXT}
+
+
+def test_a_non_boolean_consent_value_is_invalid_input(client: TestClient) -> None:
+    response = client.post(
+        CORRECT_URL, json={"text": PERSIAN_TEXT, "store_for_evaluation": "true"}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == INVALID_INPUT
 
 
 # --- Invalid input ----------------------------------------------------------

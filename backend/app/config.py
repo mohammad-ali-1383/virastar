@@ -37,19 +37,26 @@ class Settings(BaseSettings):
     # Maximum accepted text length. Configurable per `api-contract.md`.
     max_text_length: int = 1000
 
+    # Where consented correction records are appended, one JSON Lines row per
+    # successful correction (`correction-logging.md`). Anchored to the repository
+    # root like the env files, so the documented local workflows write to the
+    # same place; overridable for tests and deployments. Nothing is written
+    # unless a request opts in, and the directory is created on first use.
+    correction_log_path: Path = _REPO_ROOT / "logs" / "corrections.jsonl"
+
     # Development origins allowed by CORS (`architecture.md`, section 4).
     cors_origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ]
 
-    # --- LLM provider selection (`tech-stack.md`) ---
-    # Which adapter the correction service uses: ``groq`` or ``gemini``. The
-    # selection is explicit: an unrecognized value is a configuration error and
-    # never falls back to a different provider (see `correction.py`).
-    correction_provider: str = "groq"
+    # --- Providers (`tech-stack.md`) ---
+    # The order is fixed in code, not configuration: the correction service
+    # always tries Groq first and falls back to Gemini when Groq fails for a
+    # provider-related reason (see `correction.py`). There is deliberately no
+    # provider-selection setting, so only the two blocks below are configurable.
 
-    # --- Groq (OpenAI-compatible Chat Completions API) ---
+    # --- Groq (primary; OpenAI-compatible Chat Completions API) ---
     # Secret: read from the environment only and never logged or returned.
     # ``SecretStr`` keeps the value out of reprs, tracebacks, and logs.
     groq_api_key: SecretStr = SecretStr("")
@@ -62,7 +69,7 @@ class Settings(BaseSettings):
     # owns model settings, endpoints, and timeouts).
     groq_timeout_seconds: float = 30.0
 
-    # --- Google Gemini (generateContent API) ---
+    # --- Google Gemini (fallback provider; generateContent API) ---
     # Secret, handled exactly like the Groq key above.
     gemini_api_key: SecretStr = SecretStr("")
 

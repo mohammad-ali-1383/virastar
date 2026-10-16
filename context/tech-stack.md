@@ -5,6 +5,8 @@
 - Responsive Persian RTL interface.
 - Use the native Fetch API unless another library is justified.
 - Development port: `5173`.
+- Component tests: Vitest + Testing Library in a jsdom environment (`npm run test`), pinned as dev
+  dependencies. `npm run build` remains the production check (`tsc --noEmit` + `vite build`).
 
 ## Backend
 - Python 3.12+.
@@ -14,11 +16,13 @@
 - Development port: `8000`.
 
 ## LLM Integration — V1
-- Two provider adapters are supported and the active one is chosen explicitly with
-  `CORRECTION_PROVIDER` (`groq` or `gemini`, default `groq`). There is no automatic fallback: an
-  unrecognized value fails the request instead of silently calling another provider.
-- Only the selected provider is called, and only its credential is sent. Keep both keys
-  backend-only.
+- Two provider adapters are supported. **Groq is always tried first**; when it fails for a
+  provider-related reason (quota/rate limit, authentication/configuration, timeout, connection
+  failure, server error, or an invalid/empty response) the same request is retried **once** with
+  **Google Gemini**. There is no provider-selection setting: the order is fixed in
+  `app/services/correction.py`.
+- Only the provider being called receives a request, and only its own credential is sent. Keep both
+  keys backend-only and set both so the fallback is available.
 - **Groq** — OpenAI-compatible Chat Completions API.
   - Endpoint: `POST https://api.groq.com/openai/v1/chat/completions`.
   - Authentication: bearer API key from `GROQ_API_KEY`.
@@ -28,10 +32,11 @@
     `POST https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent`.
   - Authentication: `x-goog-api-key` header with the key from `GEMINI_API_KEY`.
   - Model: `gemini-3.5-flash-lite` by default, configurable through `GEMINI_MODEL`.
-- Per-request timeouts: `GROQ_TIMEOUT_SECONDS` and `GEMINI_TIMEOUT_SECONDS` (default `30`).
+- Per-request timeouts: `GROQ_TIMEOUT_SECONDS` and `GEMINI_TIMEOUT_SECONDS` (default `30`), each
+  bounded to one request per attempt.
 - Do not assume that free access or quotas are guaranteed.
-- Keep provider-specific integration isolated behind the adapter interface so V2 can add
-  fallback.
+- Keep provider-specific integration isolated behind the adapter interface so further providers and
+  retry policies can be added without touching the endpoint or the prompt.
 
 ## Configuration and Secrets
 - Store credentials in backend environment variables.
@@ -47,7 +52,10 @@
 
 ## Storage
 - No database in V1.
-- Do not persist submitted text by default.
+- Do not persist submitted text by default. The only exception is the optional evaluation log
+  (`correction-logging.md`): a JSON Lines file written per request **only** with explicit consent,
+  configured by `CORRECTION_LOG_PATH` (default `<repository root>/logs/corrections.jsonl`) and
+  git-ignored. Declined requests store nothing.
 
 ## Deployment
 - Consider suitable hosting after local verification.

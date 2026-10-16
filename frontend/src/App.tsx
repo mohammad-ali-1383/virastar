@@ -1,13 +1,15 @@
 /**
  * Persian proofreading interface (`context/ui.md`).
  *
- * The user types text, submits it to the backend correction API, and sees the
- * corrected result in a separate panel without the original input being
- * replaced. All provider communication happens on the backend.
+ * The user types text, submits it, and answers a Persian consent dialog before
+ * the backend correction API is called; the corrected result appears in a
+ * separate panel without the original input being replaced. All provider
+ * communication and all consent enforcement happen on the backend.
  */
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
+import ConsentDialog from "./ConsentDialog";
 import { CorrectionApiError, MAX_TEXT_LENGTH, requestCorrection } from "./api";
 
 type Status = "idle" | "loading" | "success" | "error";
@@ -24,6 +26,8 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState("");
   const [validationMessage, setValidationMessage] = useState("");
   const [copyState, setCopyState] = useState<CopyState>("idle");
+  // Consent is asked for on every submission: nothing is sent while it is open.
+  const [consentOpen, setConsentOpen] = useState(false);
 
   const requestRef = useRef<AbortController | null>(null);
   const copyTimerRef = useRef<number | null>(null);
@@ -49,20 +53,8 @@ export default function App() {
     setValidationMessage("");
   }, []);
 
-  const handleSubmit = useCallback(
-    async (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-
-      // Defence in depth: the submit button is disabled in both states.
-      if (isEmpty) {
-        setValidationMessage(EMPTY_TEXT_MESSAGE);
-        return;
-      }
-      if (isTooLong) {
-        setValidationMessage(TOO_LONG_MESSAGE);
-        return;
-      }
-
+  const sendCorrection = useCallback(
+    async (storeForEvaluation: boolean) => {
       requestRef.current?.abort();
       const controller = new AbortController();
       requestRef.current = controller;
@@ -74,7 +66,10 @@ export default function App() {
       setCopyState("idle");
 
       try {
-        const result = await requestCorrection(text.trim(), controller.signal);
+        const result = await requestCorrection(text.trim(), {
+          storeForEvaluation,
+          signal: controller.signal,
+        });
         setCorrectedText(result);
         setStatus("success");
       } catch (error) {
@@ -93,8 +88,39 @@ export default function App() {
         }
       }
     },
-    [isEmpty, isTooLong, text],
+    [text],
   );
+
+  const handleSubmit = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+
+      // Defence in depth: the submit button is disabled in both states.
+      if (isEmpty) {
+        setValidationMessage(EMPTY_TEXT_MESSAGE);
+        return;
+      }
+      if (isTooLong) {
+        setValidationMessage(TOO_LONG_MESSAGE);
+        return;
+      }
+
+      // Ask for consent first: no request is sent until the user chooses.
+      setConsentOpen(true);
+    },
+    [isEmpty, isTooLong],
+  );
+
+  const handleConsentChoice = useCallback(
+    (storeForEvaluation: boolean) => {
+      setConsentOpen(false);
+      void sendCorrection(storeForEvaluation);
+    },
+    [sendCorrection],
+  );
+
+  // Dismissing the dialog makes no choice, so nothing is sent.
+  const handleConsentDismiss = useCallback(() => setConsentOpen(false), []);
 
   const handleCopy = useCallback(async () => {
     if (correctedText === "") {
@@ -162,6 +188,10 @@ export default function App() {
           </button>
         </div>
       </form>
+
+      {consentOpen && (
+        <ConsentDialog onChoose={handleConsentChoice} onDismiss={handleConsentDismiss} />
+      )}
 
       {status === "error" && errorMessage !== "" && (
         <p className="error" role="alert">

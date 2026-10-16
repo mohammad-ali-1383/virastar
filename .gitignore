@@ -38,3 +38,6 @@ Thumbs.db
 # Logs and temp
 *.log
 tmp/
+
+# Consented evaluation logs (may contain user text). Never commit them.
+logs/

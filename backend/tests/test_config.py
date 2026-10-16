@@ -91,28 +91,22 @@ def test_a_root_env_file_is_loaded(root_env_file: Path) -> None:
     assert loaded.groq_model == "from-root-env"
 
 
-# --- Provider selection (MODEL-004) ----------------------------------------
+# --- Provider credentials (read from the environment/root .env) -------------
 
 
-def test_default_correction_provider_is_groq() -> None:
-    assert Settings(_env_file=None).correction_provider == "groq"
-
-
-def test_correction_provider_is_read_from_the_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("CORRECTION_PROVIDER", "gemini")
-
-    assert Settings(_env_file=None).correction_provider == "gemini"
-
-
-def test_correction_provider_is_read_from_a_root_env_file(tmp_path: Path) -> None:
-    # The documented configuration file is `<repo root>/.env`; the provider
-    # selection must be picked up from that same root-style file.
+def test_legacy_provider_selection_key_is_ignored(tmp_path: Path) -> None:
+    # Explicit provider selection was replaced by the fixed Groq-first fallback
+    # chain, so a `.env` written for the old configuration must still start the
+    # application instead of failing on the unknown key.
     path = tmp_path / "root.env"
-    path.write_text("CORRECTION_PROVIDER=gemini\n", encoding="utf-8")
+    path.write_text(
+        "CORRECTION_PROVIDER=gemini\nGROQ_MODEL=from-root-env\n", encoding="utf-8"
+    )
 
-    assert Settings(_env_file=path).correction_provider == "gemini"
+    loaded = Settings(_env_file=path)
+
+    assert not hasattr(loaded, "correction_provider")
+    assert loaded.groq_model == "from-root-env"
 
 
 def test_provider_keys_are_read_from_a_root_env_file(tmp_path: Path) -> None:
@@ -185,6 +179,24 @@ def test_gemini_api_key_is_read_from_the_environment(
     monkeypatch.setenv("GEMINI_API_KEY", "env-secret-key")
 
     assert Settings(_env_file=None).gemini_api_key.get_secret_value() == "env-secret-key"
+
+
+# --- Evaluation log ---------------------------------------------------------
+
+
+def test_default_correction_log_path_is_under_the_repository_root() -> None:
+    path = Settings(_env_file=None).correction_log_path
+
+    # CWD-independent, like the env-file lookup (MODEL-002), so both documented
+    # local workflows write the consented records to the same place.
+    assert path == _REPO_ROOT / "logs" / "corrections.jsonl"
+    assert path.is_absolute()
+
+
+def test_correction_log_path_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CORRECTION_LOG_PATH", "custom/records.jsonl")
+
+    assert Settings(_env_file=None).correction_log_path == Path("custom/records.jsonl")
 
 
 # --- Timeouts ---------------------------------------------------------------

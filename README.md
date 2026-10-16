@@ -4,8 +4,9 @@ AI-powered Persian proofreading service (spelling, grammar, punctuation, spacing
 typography) that preserves the author's meaning and tone.
 
 **Current status:** Phases 3 and 4 — the backend exposes `POST /api/v1/correct` (validation and the
-documented response/error formats) behind two selectable provider adapters, **Groq** and
-**Google Gemini**, and the Persian RTL website calls that endpoint. See `context/current-task.md`.
+documented response/error formats) behind two provider adapters, **Groq** as the primary and
+**Google Gemini** as the automatic fallback, and the Persian RTL website calls that endpoint. See
+`context/current-task.md`.
 
 ## Project structure
 
@@ -95,21 +96,34 @@ npm run dev
 
 ## API
 
-`POST /api/v1/correct` accepts `{"text": "..."}` and returns `{"corrected_text": "..."}`.
-Errors use `{"error": "CODE", "message": "..."}` with the codes and statuses listed in
-`context/api-contract.md`.
+`POST /api/v1/correct` accepts `{"text": "...", "store_for_evaluation": false}` and returns
+`{"corrected_text": "..."}`. Errors use `{"error": "CODE", "message": "..."}` with the codes and
+statuses listed in `context/api-contract.md`.
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/correct \
   -H "Content-Type: application/json" \
-  -d '{"text": "متن فارسی"}'
+  -d '{"text": "متن فارسی", "store_for_evaluation": false}'
 ```
 
+`store_for_evaluation` is the consent flag for the optional evaluation log
+(`context/correction-logging.md`): `true` allows storing the submitted and corrected text for
+quality review, `false` or an omitted flag stores neither, and any non-boolean value is
+`400 INVALID_INPUT`. The website asks for this choice in a Persian dialog when «اصلاح متن» is
+pressed; dismissing the dialog sends no request. The backend, not the browser, decides whether
+anything is written.
+
 The text is validated in the backend; the maximum length comes from `MAX_TEXT_LENGTH`
-(default `1000`). The backend sends the fixed proofreading prompt to the provider named by
-`CORRECTION_PROVIDER` as its system instruction, sends the user's text as a separate input, and
-returns the model's corrected text. If the provider fails, the endpoint returns the matching
-documented error and never fabricates text. The browser never learns which provider is active.
+(default `1000`). The backend sends the fixed proofreading prompt to the provider as its system
+instruction, sends the user's text as a separate input, and returns the model's corrected text.
+
+**Provider order:** Groq is always tried first. When it fails for a provider-related reason —
+quota or rate limit, authentication/configuration error, timeout, connection failure, server
+error, or an invalid/empty response — the same request is retried once with Gemini, and Gemini's
+correction is returned. Invalid input and text over the length limit are rejected before either
+provider is called. There is no other retry, and text is never fabricated: when both providers
+fail the endpoint answers `503 PROVIDER_UNAVAILABLE` with a generic message. The browser never
+learns which provider is active.
 
 ## Validation
 
@@ -118,9 +132,12 @@ documented error and never fabricates text. The browser never learns which provi
 cd backend && pytest
 
 # Frontend
+cd frontend && npm run test       # Vitest + Testing Library component tests
 cd frontend && npm run build      # TypeScript type check + production build
 cd frontend && npm run typecheck
 ```
+
+All tests mock the providers: no API key is needed and no request leaves the machine.
 
 ## Configuration
 
@@ -129,46 +146,58 @@ cd frontend && npm run typecheck
 | `APP_ENV` | backend | `development` | Runtime environment name |
 | `MAX_TEXT_LENGTH` | backend | `1000` | Maximum accepted text length |
 | `CORS_ORIGINS` | backend | dev origins | JSON array of allowed browser origins |
-| `CORRECTION_PROVIDER` | backend | `groq` | Active provider: `groq` or `gemini` (no fallback) |
-| `GROQ_API_KEY` | backend | *(empty)* | Groq API key (secret); required when Groq is selected |
+| `GROQ_API_KEY` | backend | *(empty)* | Groq API key (secret); Groq is always tried first |
 | `GROQ_MODEL` | backend | `openai/gpt-oss-20b` | Groq model ID |
 | `GROQ_TIMEOUT_SECONDS` | backend | `30` | Per-request Groq timeout |
-| `GEMINI_API_KEY` | backend | *(empty)* | Gemini API key (secret); required when Gemini is selected |
+| `GEMINI_API_KEY` | backend | *(empty)* | Gemini API key (secret); used when Groq fails |
 | `GEMINI_MODEL` | backend | `gemini-3.5-flash-lite` | Gemini model ID |
 | `GEMINI_TIMEOUT_SECONDS` | backend | `30` | Per-request Gemini timeout |
+| `CORRECTION_LOG_PATH` | backend | `<repo root>/logs/corrections.jsonl` | Consented evaluation log (JSON Lines) |
 | `VITE_API_BASE_URL` | frontend | `http://localhost:8000` | Backend base URL used by the browser |
 
 Secrets live only in backend environment variables. Never place credentials in frontend
-code or in `.env` files that are committed. Each key is sent to its provider in a request header
+code or in `.env` files that are committed. Each key is sent to its own provider in a request header
 — Groq in `Authorization: Bearer`, Gemini in `x-goog-api-key` (never the URL) — and is never
-logged or returned. Only the selected provider's key is sent; the other key is never used.
+logged or returned. Only the key of the provider being called is sent; the other key is never
+used. With the fallback in place, set both keys so a Groq outage does not become a service outage.
+
+## Evaluation log (optional)
+
+Nothing is stored unless a request explicitly consents (`store_for_evaluation: true`). With consent,
+the backend appends one JSON Lines row per successful correction to `CORRECTION_LOG_PATH`
+(default `<repo root>/logs/corrections.jsonl`):
+
+```json
+{"timestamp":"2026-10-16T12:30:00+00:00","original_text":"...","provider":"gemini","model":"gemini-3.5-flash-lite","corrected_text":"..."}
+```
+
+`provider`/`model` name the provider that **actually succeeded**, so a Groq-to-Gemini fallback is
+recorded as Gemini. Declined requests store nothing and do not even create the file, and a failed
+write never breaks or retries the request — it returns the correction and logs a sanitized warning.
+`logs/` is git-ignored. Docker Compose sets `CORRECTION_LOG_PATH=/app/logs/corrections.jsonl` and
+mounts `./logs`, so records survive a container recreate; delete `logs/corrections.jsonl` to clear
+them.
 
 ## Local integration check (live provider)
 
-The automated tests mock both providers, need no key, and never make a real API call. To exercise a
-real integration, run one provider at a time; no live connection is verified until an actual API
-request succeeds.
+The automated tests mock both providers, need no key, and never make a real API call. No live
+connection is verified until an actual API request succeeds.
 
 1. Get a key:
-   - Groq — https://console.groq.com/keys
-   - Google Gemini — https://aistudio.google.com/apikey
-2. Put it in `<repo root>/.env` (git-ignored) — never in source, chat, or a committed file. Only the
-   selected provider's key is used:
+   - Groq — https://console.groq.com/keys (primary)
+   - Google Gemini — https://aistudio.google.com/apikey (fallback)
+2. Put them in `<repo root>/.env` (git-ignored) — never in source, chat, or a committed file:
 
    ```bash
-   # Option 1 — Groq (default provider)
-   CORRECTION_PROVIDER=groq
+   # Groq is always tried first.
    GROQ_API_KEY=your-key-here
    GROQ_MODEL=openai/gpt-oss-20b
 
-   # Option 2 — Google Gemini (use instead of the Groq lines above)
-   # CORRECTION_PROVIDER=gemini
-   # GEMINI_API_KEY=your-key-here
-   # GEMINI_MODEL=gemini-3.5-flash-lite
+   # Gemini is used automatically when Groq fails. With GEMINI_API_KEY empty, a
+   # Groq failure has no fallback and the request returns 503 PROVIDER_UNAVAILABLE.
+   GEMINI_API_KEY=your-key-here
+   GEMINI_MODEL=gemini-3.5-flash-lite
    ```
-
-   `CORRECTION_PROVIDER` must be exactly `groq` or `gemini`. Any other value fails every request
-   with `500 INTERNAL_ERROR` and calls no provider — the selection never falls back silently.
 
 3. Start the backend — pick one workflow:
 
@@ -196,27 +225,28 @@ request succeeds.
      -d '{"text": "سلام این یک متن ازمایشی است"}'
    ```
 
-   A corrected `{"corrected_text": "..."}` means the key, model, and endpoint work for the selected
-   provider. `502 PROVIDER_AUTH_ERROR` means the selected key is missing or rejected;
-   `503`/`504`/`429` map to the documented provider errors. If the selected provider's key is empty,
-   the endpoint fails with `502 PROVIDER_AUTH_ERROR` rather than returning the text unchanged.
+   A corrected `{"corrected_text": "..."}` means the working key, model, and endpoint produced a
+   correction. Which provider answered is visible in the backend log, which names the providers and
+   the sanitized error codes only ("Provider groq failed (code=PROVIDER_RATE_LIMIT), falling back to
+   gemini"). `503 PROVIDER_UNAVAILABLE` means Groq failed and Gemini failed too (or is not
+   configured) — the endpoint never returns the text unchanged in that case.
 
-   Repeat step 4 once per provider after switching `CORRECTION_PROVIDER` and restarting the backend
-   (recreate the container for Compose).
+   To force the fallback deliberately, temporarily set a wrong `GROQ_API_KEY` (or an empty one) and
+   check that the request still returns a correction and that the log shows the Groq failure.
 
-   Confirm the loaded configuration without exposing the key:
+   Confirm the loaded configuration without exposing the keys:
 
    ```bash
    # Local
-   cd backend && python -c "from app.config import settings; p = settings.correction_provider; print(p, getattr(settings, f'{p}_model'), bool(getattr(settings, f'{p}_api_key').get_secret_value()))"
+   cd backend && python -c "from app.config import settings; print(settings.groq_model, settings.gemini_model, bool(settings.groq_api_key.get_secret_value()), bool(settings.gemini_api_key.get_secret_value()))"
    # Compose
-   docker compose exec backend python -c "from app.config import settings; p = settings.correction_provider; print(p, getattr(settings, f'{p}_model'), bool(getattr(settings, f'{p}_api_key').get_secret_value()))"
+   docker compose exec backend python -c "from app.config import settings; print(settings.groq_model, settings.gemini_model, bool(settings.groq_api_key.get_secret_value()), bool(settings.gemini_api_key.get_secret_value()))"
    ```
 
-   Both print the active provider, its model ID, and `True` when its key is present (never the key
-   itself).
+   Both print the two model IDs and `True` per configured key (never a key itself).
 
 ## Roadmap
 
-Phase 2 adds `POST /api/v1/correct`, Phase 3 the selectable Groq/Gemini provider adapters, and
-Phase 4 the website. V2/V3 add controlled fallback and a Telegram bot. See `context/task-plan.md`.
+Phase 2 adds `POST /api/v1/correct`, Phase 3 the Groq and Gemini provider adapters with the automatic
+Groq-to-Gemini fallback, and Phase 4 the website. V2/V3 add further providers and a Telegram bot.
+See `context/task-plan.md`.

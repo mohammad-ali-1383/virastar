@@ -29,18 +29,20 @@
 - Implement the selected provider adapter and `correction-prompt.md`.
 - Add timeout and provider-error handling.
 - Providers (V1): **Groq** (OpenAI-compatible Chat Completions, `GROQ_MODEL`, default
-  `openai/gpt-oss-20b`) and **Google Gemini** (`generateContent`, `GEMINI_MODEL`, default
-  `gemini-3.5-flash-lite`), selected explicitly with `CORRECTION_PROVIDER` (default `groq`).
-  Supersedes the AvalAI integration (`MODEL-003`) and the first Gemini candidate (`MODEL-001`).
-  See `tech-stack.md`.
+  `openai/gpt-oss-20b`), always tried first, and **Google Gemini** (`generateContent`,
+  `GEMINI_MODEL`, default `gemini-3.5-flash-lite`) as the automatic fallback. Supersedes the
+  explicit `CORRECTION_PROVIDER` selection of `MODEL-004`, the AvalAI integration (`MODEL-003`),
+  and the first Gemini candidate (`MODEL-001`). See `tech-stack.md`.
 
 ### Phase 4: Website
 - Build the interface according to `ui.md`.
 - Connect the frontend to the backend.
 - Implement the character counter, input, loading, result, copy, and error states.
+- Ask for consent before sending a request and pass the explicit `store_for_evaluation` flag
+  (`LOG-001`, `correction-logging.md`); the backend enforces whether anything is stored.
 
 ### Phase 5: Integration and Acceptance
-- Run backend, frontend, and integration checks.
+- Run backend, frontend, and integration checks (backend suite, `npm run test`, `npm run build`).
 - Test the Persian proofreading prompt with representative text.
 - Fix blocking issues and verify the MVP acceptance criteria.
 
@@ -56,6 +58,10 @@ Start only after V1 is accepted.
 - Implement bounded fallback for eligible failures.
 - Test provider failures and fallback behavior.
 - Preserve the existing API contract.
+
+Progress: the independent fallback provider, the bounded fallback (exactly one retry), and the
+fallback test suite were implemented as `FALLBACK-001` at the user's explicit request before V1 was
+accepted (Groq primary, Gemini fallback, `503 PROVIDER_UNAVAILABLE` when both fail).
 
 ## V3 — Telegram Bot
 Start only after V2 is accepted.

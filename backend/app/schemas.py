@@ -12,6 +12,20 @@ class CorrectRequest(BaseModel):
 
     text: str = Field(description="Persian text to proofread.")
 
+    # Consent flag for the evaluation log (`correction-logging.md`). The default
+    # is deliberately the privacy-preserving one: a client that does not state a
+    # choice gets no stored text. ``strict=True`` means only a real JSON boolean
+    # counts — a string such as "yes" or the number 1 is invalid input rather
+    # than an accidental opt-in.
+    store_for_evaluation: bool = Field(
+        default=False,
+        strict=True,
+        description=(
+            "When true, the backend may store the submitted and corrected text "
+            "for quality evaluation. Defaults to false; nothing is stored otherwise."
+        ),
+    )
+
 
 class CorrectResponse(BaseModel):
     """Successful response body."""

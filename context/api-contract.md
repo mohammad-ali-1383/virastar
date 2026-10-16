@@ -7,8 +7,18 @@
 Content-Type: `application/json`
 
     {
-      "text": "متن فارسی مورد نظر برای اصلاح"
+      "text": "متن فارسی مورد نظر برای اصلاح",
+      "store_for_evaluation": false
     }
+
+### Consent field (`store_for_evaluation`)
+- Optional JSON boolean, default `false` (`correction-logging.md`).
+- `true` — the backend may append the submitted and corrected text to the evaluation log so the
+  prompt and providers can be reviewed.
+- `false` or omitted — neither text is stored for evaluation.
+- Must be a real JSON boolean. A string (`"true"`, `"yes"`) or a number is `400 INVALID_INPUT`,
+  never an accidental opt-in.
+- The backend enforces this; the frontend only reports the user's choice.
 
 ## Success Response
 HTTP `200 OK`
@@ -40,6 +50,7 @@ All errors must use a consistent JSON structure.
 ## Validation
 - `text` must be a non-empty string after trimming.
 - The maximum text length defaults to 1000 characters and must be configurable.
+- `store_for_evaluation` must be a JSON boolean when present; any other type is invalid input.
 - Reject malformed JSON and invalid input.
 - Validate the length in the backend; frontend validation is only for user experience.
 - Use a consistent error structure.
@@ -48,9 +59,20 @@ All errors must use a consistent JSON structure.
 ## Behavior
 - The frontend sends text only to this backend endpoint.
 - The backend validates input and invokes the correction service.
-- The correction service uses the configured LLM adapter.
-- Return HTTP 200 only when correction succeeds.
+- Validation errors (missing/empty/whitespace text, and text over the limit) are returned without
+  calling any LLM provider.
+- The correction service always tries Groq first and retries the same request once with Gemini when
+  Groq fails for a provider-related reason (quota/rate limit, authentication/configuration, timeout,
+  connection failure, server error, or an invalid/empty response).
+- Return HTTP 200 only when correction succeeds, using the text of whichever provider succeeded.
+- When both providers fail, return `503 PROVIDER_UNAVAILABLE` with the generic message: the client
+  is never told which provider failed or why.
 - Never fabricate corrected text when the provider fails.
+- Only a successful correction can be stored for evaluation, and only when the request consented:
+  the record names the provider and model that actually succeeded, so a Groq-to-Gemini fallback is
+  recorded as Gemini.
+- A failed evaluation-log write never changes the response: the client still receives its correction.
+  See `correction-logging.md`.
 
 ## Compatibility
 - Keep the public endpoint and response format stable in V2.
@@ -59,3 +81,5 @@ All errors must use a consistent JSON structure.
 
 ## Provider Error Mapping
 Map known provider errors to the public error codes above. Do not expose raw provider error messages to clients. Use `PROVIDER_RATE_LIMIT` only when the provider's rate/quota limit is identified; use `429` for that public error.
+
+The per-provider mapping stays in the adapters (an exhaustion, authentication, timeout, or server error raises the matching internal error). Because the endpoint retries once with the fallback provider and returns `PROVIDER_UNAVAILABLE` when both attempts fail, the provider-specific codes below are not what a client normally sees: the successful provider's correction is returned, or the single generic `503`.

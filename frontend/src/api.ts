@@ -87,20 +87,38 @@ function extractCorrectedText(payload: unknown): string | null {
 }
 
 /**
+ * Consent choice for the optional evaluation log (`context/correction-logging.md`).
+ *
+ * The flag is always sent explicitly, and the backend — not the browser — is
+ * what enforces it: `true` allows storing the submitted and corrected text for
+ * quality evaluation, `false` stores neither.
+ */
+export interface CorrectionRequestOptions {
+  storeForEvaluation: boolean;
+  signal?: AbortSignal;
+}
+
+/**
  * Send `text` to `POST /api/v1/correct` and resolve with the corrected text.
  *
  * Never fabricates a result: any failure rejects with a
  * {@link CorrectionApiError} (or the abort error raised by `fetch`).
  */
-export async function requestCorrection(text: string, signal?: AbortSignal): Promise<string> {
+export async function requestCorrection(
+  text: string,
+  options: CorrectionRequestOptions,
+): Promise<string> {
   let response: Response;
 
   try {
     response = await fetch(`${apiBaseUrl()}${CORRECT_PATH}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-      signal,
+      body: JSON.stringify({
+        text,
+        store_for_evaluation: options.storeForEvaluation,
+      }),
+      signal: options.signal,
     });
   } catch (error) {
     // Caller-initiated cancellation must not be reported as a network failure.

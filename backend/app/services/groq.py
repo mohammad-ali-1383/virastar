@@ -92,6 +92,15 @@ class GroqProvider:
 
         return GROQ_CHAT_COMPLETIONS_URL
 
+    @property
+    def model(self) -> str:
+        """The model ID this adapter actually sends (``GROQ_MODEL``).
+
+        Exposed so the correction service can record the model that produced a
+        correction instead of assuming configuration and request agree.
+        """
+        return self._model
+
     async def generate(self, *, system_instruction: str, user_text: str) -> str:
         """Return the provider's corrected text for ``user_text``.
 

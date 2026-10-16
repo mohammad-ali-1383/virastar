@@ -96,6 +96,15 @@ class GeminiProvider:
             f"/models/{self._model}:generateContent"
         )
 
+    @property
+    def model(self) -> str:
+        """The model ID this adapter actually sends (``GEMINI_MODEL``).
+
+        Exposed so the correction service can record the model that produced a
+        correction instead of assuming configuration and request agree.
+        """
+        return self._model
+
     async def generate(self, *, system_instruction: str, user_text: str) -> str:
         """Return the provider's corrected text for ``user_text``.
 

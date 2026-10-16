@@ -9,6 +9,7 @@ for API tests, and the real provider adapters are exercised through
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import httpx
 import pytest
@@ -17,7 +18,11 @@ from pydantic import SecretStr
 
 from app.config import settings
 from app.main import app
-from app.services.correction import get_correction_service
+from app.services.correction import CorrectionResult, get_correction_service
+from app.services.correction_log import CorrectionLogStore
+
+GROQ_PROVIDER = "groq"
+GEMINI_PROVIDER = "gemini"
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -26,26 +31,47 @@ Handler = Callable[[httpx.Request], httpx.Response]
 GROQ_TEST_KEY = "test-groq-key-not-real"
 GEMINI_TEST_KEY = "test-gemini-key-not-real"
 
+# URL fragments that identify each provider's endpoint, so a test can answer or
+# inspect Groq and Gemini traffic independently.
+GROQ_URL_MARKER = "api.groq.com"
+GEMINI_URL_MARKER = "generativelanguage.googleapis.com"
+
+PROVIDER_URL_MARKERS = (GROQ_URL_MARKER, GEMINI_URL_MARKER)
+
 
 class StubCorrectionService:
     """Test double for :class:`~app.services.correction.CorrectionService`.
 
     Records the text it receives and either returns ``result`` or raises
     ``error``, which lets tests simulate both successful and failing providers.
+    ``provider``/``model`` stand in for the adapter that produced the text, so a
+    test can check what the evaluation log would record.
     """
 
-    def __init__(self, result: str | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        result: str | None = None,
+        error: Exception | None = None,
+        provider: str = GROQ_PROVIDER,
+        model: str = "stub-model",
+    ) -> None:
         self.result = result
         self.error = error
+        self.provider = provider
+        self.model = model
         self.received: list[str] = []
 
-    async def correct(self, text: str) -> str:
+    async def correct(self, text: str) -> CorrectionResult:
         self.received.append(text)
 
         if self.error is not None:
             raise self.error
 
-        return self.result if self.result is not None else text
+        return CorrectionResult(
+            text=self.result if self.result is not None else text,
+            provider=self.provider,
+            model=self.model,
+        )
 
 
 @pytest.fixture
@@ -81,22 +107,48 @@ def tolerant_client(stub_service: StubCorrectionService) -> Iterator[TestClient]
 class ProviderTransport:
     """Mock provider transport that records the requests the adapters send.
 
-    Handlers are keyed by nothing: one handler answers every request, and the
-    recorded ``requests`` list gives tests access to the URL, headers, and body
-    the adapter actually produced.
+    One default handler answers every request; ``respond_for`` installs a
+    handler for the requests whose URL contains a given marker, which lets a
+    test drive Groq and Gemini independently (needed by the fallback tests).
+    The recorded ``requests`` list gives tests access to the URL, headers, and
+    body each adapter actually produced.
     """
 
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
         self._handler: Handler = lambda _: httpx.Response(200, json={})
+        self._routes: list[tuple[str, Handler]] = []
 
     def respond(self, handler: Handler) -> None:
         """Install the handler that answers subsequent provider requests."""
         self._handler = handler
 
+    def respond_for(self, url_marker: str, handler: Handler) -> None:
+        """Answer only requests whose URL contains ``url_marker``.
+
+        Markers are matched in the order they were added, so the default
+        handler set by ``respond`` still answers everything else.
+        """
+        self._routes.append((url_marker, handler))
+
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+
+        url = str(request.url)
+        for marker, handler in self._routes:
+            if marker in url:
+                return handler(request)
+
         return self._handler(request)
+
+    def requests_for(self, url_marker: str) -> list[httpx.Request]:
+        """The recorded requests sent to the endpoint matching ``url_marker``."""
+        return [request for request in self.requests if url_marker in str(request.url)]
+
+    @property
+    def urls(self) -> list[str]:
+        """The URLs of every recorded request, in order."""
+        return [str(request.url) for request in self.requests]
 
 
 @pytest.fixture
@@ -126,8 +178,81 @@ def provider_client(provider_transport: ProviderTransport) -> Iterator[TestClien
         yield test_client
 
 
+@pytest.fixture(autouse=True)
+def correction_log_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the evaluation log at a temporary file (never the real logs/).
+
+    Autouse, so *no* test can append to the deployment's configured
+    ``logs/corrections.jsonl`` even if it forgets to ask for this fixture. The
+    temporary path is returned so a test can read back the JSON Lines rows that
+    were written; the file is not created until a consented write happens.
+    """
+    path = tmp_path / "logs" / "corrections.jsonl"
+    monkeypatch.setattr(settings, "correction_log_path", path)
+
+    return path
+
+
 @pytest.fixture
 def provider_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     """Give both providers placeholder keys without touching any real secret."""
     monkeypatch.setattr(settings, "groq_api_key", SecretStr(GROQ_TEST_KEY))
     monkeypatch.setattr(settings, "gemini_api_key", SecretStr(GEMINI_TEST_KEY))
+
+
+# --- Shared provider response builders -------------------------------------- #
+# One definition per provider payload shape, used by the service and fallback
+# tests so the mocked wire format cannot drift between test modules.
+
+
+def groq_body(text: str) -> dict[str, object]:
+    """A successful Groq chat-completions payload carrying ``text``."""
+    return {
+        "id": "chatcmpl-test",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }
+        ],
+    }
+
+
+def gemini_body(text: str) -> dict[str, object]:
+    """A successful Gemini ``generateContent`` payload carrying ``text``."""
+    return {
+        "candidates": [
+            {
+                "content": {"role": "model", "parts": [{"text": text}]},
+                "finishReason": "STOP",
+                "index": 0,
+            }
+        ]
+    }
+
+
+def groq_response(text: str) -> httpx.Response:
+    """200 response with a Groq success body."""
+    return httpx.Response(200, json=groq_body(text))
+
+
+def gemini_response(text: str) -> httpx.Response:
+    """200 response with a Gemini success body."""
+    return httpx.Response(200, json=gemini_body(text))
+
+
+def groq_error(status_code: int, *, message: str = "provider detail") -> httpx.Response:
+    """Groq error response; ``message`` stands in for echoed provider detail."""
+    return httpx.Response(
+        status_code,
+        json={"error": {"message": message, "type": "provider_error", "code": status_code}},
+    )
+
+
+def gemini_error(status_code: int, *, message: str = "provider detail") -> httpx.Response:
+    """Gemini error response; ``message`` stands in for echoed provider detail."""
+    return httpx.Response(
+        status_code,
+        json={"error": {"code": status_code, "message": message, "status": "UNAVAILABLE"}},
+    )
