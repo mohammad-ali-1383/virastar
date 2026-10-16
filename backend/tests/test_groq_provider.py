@@ -118,11 +118,14 @@ def test_prompt_and_user_text_are_sent_as_separate_messages() -> None:
 
 
 def test_system_prompt_matches_the_correction_prompt_spec() -> None:
-    # Guardrail: the exact instruction committed in `correction-prompt.md`.
+    # Guardrail: the role line and the closing output rule of the instruction
+    # committed in `correction-prompt.md`. The full text, its rule coverage, and
+    # its synchronization with the document are pinned by
+    # `tests/test_correction_prompt.py`.
     assert PERSIAN_PROOFREADING_SYSTEM_PROMPT.startswith(
         "You are a professional Persian-language proofreader."
     )
-    assert "Return only the corrected text." in PERSIAN_PROOFREADING_SYSTEM_PROMPT
+    assert "Return only the corrected Persian text" in PERSIAN_PROOFREADING_SYSTEM_PROMPT
 
 
 def test_api_key_is_sent_in_the_authorization_header_and_never_in_the_url() -> None:
