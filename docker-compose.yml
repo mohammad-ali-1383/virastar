@@ -1,0 +1,44 @@
+# Local development stack (Phase 1).
+# Copy `.env.example` to `.env` before running. Never commit real secrets.
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: development
+      MAX_TEXT_LENGTH: "1000"
+      CORS_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173"]'
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      # Mount only the application package for reload during development.
+      - ./backend/app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    volumes:
+      # Mount the source for hot reload while keeping container node_modules.
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: npm run dev
