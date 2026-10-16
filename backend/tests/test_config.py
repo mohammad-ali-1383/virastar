@@ -41,16 +41,16 @@ def test_max_text_length_is_read_from_the_environment(
 
 @pytest.fixture
 def root_env_file(tmp_path: Path) -> Path:
-    """A root-style dotenv file (no real secrets, only the model ID)."""
+    """A root-style dotenv file (no real secrets, only a model ID)."""
     path = tmp_path / "root.env"
-    path.write_text("GEMINI_MODEL=from-root-env\n", encoding="utf-8")
+    path.write_text("GROQ_MODEL=from-root-env\n", encoding="utf-8")
     return path
 
 
 @pytest.fixture
 def backend_env_file(tmp_path: Path) -> Path:
     path = tmp_path / "backend.env"
-    path.write_text("GEMINI_MODEL=from-backend-env\n", encoding="utf-8")
+    path.write_text("GROQ_MODEL=from-backend-env\n", encoding="utf-8")
     return path
 
 
@@ -81,33 +81,101 @@ def test_later_env_file_wins(root_env_file: Path, backend_env_file: Path) -> Non
     # backend file overrides the root one. This locks that contract.
     loaded = Settings(_env_file=(root_env_file, backend_env_file))
 
-    assert loaded.gemini_model == "from-backend-env"
+    assert loaded.groq_model == "from-backend-env"
 
 
 def test_a_root_env_file_is_loaded(root_env_file: Path) -> None:
     # End-to-end check that a root-style `.env` value reaches the settings.
     loaded = Settings(_env_file=root_env_file)
 
-    assert loaded.gemini_model == "from-root-env"
+    assert loaded.groq_model == "from-root-env"
 
 
-def test_default_gemini_model_is_the_verified_stable_flash_model() -> None:
-    assert Settings(_env_file=None).gemini_model == "gemini-3.8-flash"
+# --- Provider selection (MODEL-004) ----------------------------------------
+
+
+def test_default_correction_provider_is_groq() -> None:
+    assert Settings(_env_file=None).correction_provider == "groq"
+
+
+def test_correction_provider_is_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CORRECTION_PROVIDER", "gemini")
+
+    assert Settings(_env_file=None).correction_provider == "gemini"
+
+
+def test_correction_provider_is_read_from_a_root_env_file(tmp_path: Path) -> None:
+    # The documented configuration file is `<repo root>/.env`; the provider
+    # selection must be picked up from that same root-style file.
+    path = tmp_path / "root.env"
+    path.write_text("CORRECTION_PROVIDER=gemini\n", encoding="utf-8")
+
+    assert Settings(_env_file=path).correction_provider == "gemini"
+
+
+def test_provider_keys_are_read_from_a_root_env_file(tmp_path: Path) -> None:
+    path = tmp_path / "root.env"
+    path.write_text(
+        "GROQ_API_KEY=placeholder-groq\nGEMINI_API_KEY=placeholder-gemini\n",
+        encoding="utf-8",
+    )
+
+    loaded = Settings(_env_file=path)
+
+    assert loaded.groq_api_key.get_secret_value() == "placeholder-groq"
+    assert loaded.gemini_api_key.get_secret_value() == "placeholder-gemini"
+
+
+# --- Groq settings ----------------------------------------------------------
+
+
+def test_default_groq_model() -> None:
+    assert Settings(_env_file=None).groq_model == "openai/gpt-oss-20b"
+
+
+def test_groq_model_is_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GROQ_MODEL", "openai/gpt-oss-120b")
+
+    assert Settings(_env_file=None).groq_model == "openai/gpt-oss-120b"
+
+
+def test_groq_api_key_defaults_to_empty_and_is_a_secret() -> None:
+    default_settings = Settings(_env_file=None)
+
+    assert default_settings.groq_api_key.get_secret_value() == ""
+    # The secret must not appear in reprs or logs.
+    assert "hunter2" not in repr(Settings(_env_file=None, groq_api_key="hunter2"))
+
+
+def test_groq_api_key_is_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "env-secret-key")
+
+    assert Settings(_env_file=None).groq_api_key.get_secret_value() == "env-secret-key"
+
+
+# --- Gemini settings --------------------------------------------------------
+
+
+def test_default_gemini_model() -> None:
+    assert Settings(_env_file=None).gemini_model == "gemini-3.5-flash-lite"
 
 
 def test_gemini_model_is_read_from_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.6-flash")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.5-pro")
 
-    assert Settings(_env_file=None).gemini_model == "gemini-3.6-flash"
+    assert Settings(_env_file=None).gemini_model == "gemini-3.5-pro"
 
 
 def test_gemini_api_key_defaults_to_empty_and_is_a_secret() -> None:
     default_settings = Settings(_env_file=None)
 
     assert default_settings.gemini_api_key.get_secret_value() == ""
-    # The secret must not appear in reprs or logs.
     assert "hunter2" not in repr(Settings(_env_file=None, gemini_api_key="hunter2"))
 
 
@@ -119,8 +187,21 @@ def test_gemini_api_key_is_read_from_the_environment(
     assert Settings(_env_file=None).gemini_api_key.get_secret_value() == "env-secret-key"
 
 
-def test_gemini_endpoint_and_timeout_defaults() -> None:
+# --- Timeouts ---------------------------------------------------------------
+
+
+def test_provider_timeouts_default_to_30_seconds() -> None:
     default_settings = Settings(_env_file=None)
 
-    assert default_settings.gemini_api_base_url == "https://generativelanguage.googleapis.com"
-    assert default_settings.gemini_timeout_seconds > 0
+    assert default_settings.groq_timeout_seconds == 30.0
+    assert default_settings.gemini_timeout_seconds == 30.0
+
+
+def test_provider_timeouts_are_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GROQ_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("GEMINI_TIMEOUT_SECONDS", "7")
+
+    loaded = Settings(_env_file=None)
+
+    assert loaded.groq_timeout_seconds == 12.5
+    assert loaded.gemini_timeout_seconds == 7.0

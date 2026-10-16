@@ -1,16 +1,18 @@
 """Google Gemini provider adapter (the LLM adapter of `architecture.md`).
 
-Provider-specific authentication, request construction, response parsing, and
-error mapping live here so the correction service and the HTTP layer stay
-provider-agnostic and V2 can add another adapter behind the same interface.
-
 The adapter talks to the Gemini Developer API ``generateContent`` REST method:
 
     POST {base}/v1beta/models/{model}:generateContent
     x-goog-api-key: <API key>
 
-The API key is read from backend configuration only and is sent as a request
-header (never in the URL) so it cannot leak through access logs.
+The fixed proofreading prompt travels as the ``systemInstruction`` and the
+user's text as a separate ``contents`` entry. The API key is read from backend
+configuration only and is sent as a request header (never in the URL) so it
+cannot leak through access logs.
+
+Provider-specific authentication, request construction, response parsing, and
+error mapping live here so the correction service and the HTTP layer stay
+provider-agnostic and another adapter can be added behind the same interface.
 """
 
 from __future__ import annotations
@@ -28,7 +30,10 @@ from app.errors import (
     ProviderUnavailableError,
 )
 
-# Gemini Developer API version (`https://ai.google.dev/api`).
+# Gemini Developer API base URL and version (`https://ai.google.dev/api`). The
+# adapter appends ``/models/{model}:generateContent``; only the API key and the
+# model are configuration.
+GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com"
 GEMINI_API_VERSION = "v1beta"
 
 # The provider reports the gRPC reason in ``error.status``. Only that short
@@ -59,13 +64,11 @@ class GeminiProvider:
         *,
         api_key: str,
         model: str,
-        base_url: str = "https://generativelanguage.googleapis.com",
         timeout_seconds: float = 30.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
-        self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         # Optional injected client: tests supply one with a mock transport so no
         # real network call is made (`testing.md`).
@@ -81,7 +84,6 @@ class GeminiProvider:
         return cls(
             api_key=settings.gemini_api_key.get_secret_value(),  # type: ignore[attr-defined]
             model=settings.gemini_model,  # type: ignore[attr-defined]
-            base_url=settings.gemini_api_base_url,  # type: ignore[attr-defined]
             timeout_seconds=settings.gemini_timeout_seconds,  # type: ignore[attr-defined]
         )
 
@@ -89,7 +91,10 @@ class GeminiProvider:
     def endpoint(self) -> str:
         """Full ``generateContent`` URL for the configured model."""
 
-        return f"{self._base_url}/{GEMINI_API_VERSION}/models/{self._model}:generateContent"
+        return (
+            f"{GEMINI_API_BASE_URL}/{GEMINI_API_VERSION}"
+            f"/models/{self._model}:generateContent"
+        )
 
     async def generate(self, *, system_instruction: str, user_text: str) -> str:
         """Return the provider's corrected text for ``user_text``.

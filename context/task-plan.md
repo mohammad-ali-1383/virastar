@@ -24,11 +24,15 @@
 - Add automated tests using mocked provider responses.
 
 ### Phase 3: LLM Selection and Integration
-- Evaluate Google Gemini API as the initial candidate.
-- Verify the model identifier, API availability, free-tier eligibility, and Persian proofreading quality.
+- Evaluate a candidate provider and verify the model identifier, API availability, free-tier eligibility, and Persian proofreading quality.
 - Report findings before switching providers or models.
 - Implement the selected provider adapter and `correction-prompt.md`.
 - Add timeout and provider-error handling.
+- Providers (V1): **Groq** (OpenAI-compatible Chat Completions, `GROQ_MODEL`, default
+  `openai/gpt-oss-20b`) and **Google Gemini** (`generateContent`, `GEMINI_MODEL`, default
+  `gemini-3.5-flash-lite`), selected explicitly with `CORRECTION_PROVIDER` (default `groq`).
+  Supersedes the AvalAI integration (`MODEL-003`) and the first Gemini candidate (`MODEL-001`).
+  See `tech-stack.md`.
 
 ### Phase 4: Website
 - Build the interface according to `ui.md`.

@@ -43,19 +43,33 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
     ]
 
-    # --- LLM provider (Google Gemini Developer API, `tech-stack.md`) ---
+    # --- LLM provider selection (`tech-stack.md`) ---
+    # Which adapter the correction service uses: ``groq`` or ``gemini``. The
+    # selection is explicit: an unrecognized value is a configuration error and
+    # never falls back to a different provider (see `correction.py`).
+    correction_provider: str = "groq"
+
+    # --- Groq (OpenAI-compatible Chat Completions API) ---
     # Secret: read from the environment only and never logged or returned.
     # ``SecretStr`` keeps the value out of reprs, tracebacks, and logs.
+    groq_api_key: SecretStr = SecretStr("")
+
+    # Model ID served by Groq; overridable so a model change needs no code
+    # change (`api-contract.md` -> Compatibility).
+    groq_model: str = "openai/gpt-oss-20b"
+
+    # Per-request provider timeout (`architecture.md`, section 3: configuration
+    # owns model settings, endpoints, and timeouts).
+    groq_timeout_seconds: float = 30.0
+
+    # --- Google Gemini (generateContent API) ---
+    # Secret, handled exactly like the Groq key above.
     gemini_api_key: SecretStr = SecretStr("")
 
-    # Model ID verified against the official Gemini documentation. Stable,
-    # free-tier Flash text model recommended for new projects; overridable so a
-    # model change needs no code change (`api-contract.md` -> Compatibility).
-    gemini_model: str = "gemini-3.8-flash"
+    # Model ID served by Gemini; overridable without a code change.
+    gemini_model: str = "gemini-3.5-flash-lite"
 
-    # Gemini Developer API base URL and per-request timeout (`architecture.md`,
-    # section 3: configuration owns model settings, endpoints, and timeouts).
-    gemini_api_base_url: str = "https://generativelanguage.googleapis.com"
+    # Per-request provider timeout, independent of the Groq one.
     gemini_timeout_seconds: float = 30.0
 
 

@@ -4,7 +4,8 @@
 1. **Frontend:** React website with Persian RTL layout.
 2. **Backend API:** FastAPI service that validates requests and coordinates correction.
 3. **Correction Service:** Applies the fixed proofreading prompt and manages the correction workflow.
-4. **LLM Adapter:** Communicates with one configured external LLM API.
+4. **LLM Adapter:** Communicates with the configured external LLM API. Two adapters are
+   supported (Groq, Google Gemini) and the active one is selected explicitly by configuration.
 
 The frontend must never call the LLM provider directly.
 
@@ -13,7 +14,7 @@ The frontend must never call the LLM provider directly.
 2. The frontend sends the text to the backend API.
 3. The backend validates the input and enforces the configured maximum length.
 4. The correction service combines the fixed system prompt from `correction-prompt.md` with the user's text as a separate input.
-5. The LLM adapter sends the request to the configured provider.
+5. The LLM adapter sends the request to the provider named by `CORRECTION_PROVIDER`.
 6. The backend validates the provider response and returns the corrected text.
 7. The frontend displays the result or a safe error message.
 
@@ -21,7 +22,8 @@ The frontend must never call the LLM provider directly.
 - **Frontend:** UI, input handling, character counter, loading states, and result display.
 - **Backend API:** Request validation and HTTP response handling.
 - **Correction service:** Proofreading workflow and prompt management.
-- **LLM adapter:** Provider-specific authentication, requests, and response parsing.
+- **LLM adapter:** Provider-specific authentication, requests, and response parsing, one module
+  per provider behind a shared interface.
 - **Configuration:** Model settings, endpoints, timeouts, maximum text length, and secrets.
 
 ## 4. Development Origins

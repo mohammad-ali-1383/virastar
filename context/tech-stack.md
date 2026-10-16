@@ -14,11 +14,24 @@
 - Development port: `8000`.
 
 ## LLM Integration — V1
-- Use exactly one external LLM API.
-- Evaluate Google Gemini API through Google AI Studio as the initial candidate.
-- Candidate model: `gemini-3.8-flash`, subject to verification of the actual model identifier, API availability, free-tier eligibility, and Persian proofreading quality.
+- Two provider adapters are supported and the active one is chosen explicitly with
+  `CORRECTION_PROVIDER` (`groq` or `gemini`, default `groq`). There is no automatic fallback: an
+  unrecognized value fails the request instead of silently calling another provider.
+- Only the selected provider is called, and only its credential is sent. Keep both keys
+  backend-only.
+- **Groq** — OpenAI-compatible Chat Completions API.
+  - Endpoint: `POST https://api.groq.com/openai/v1/chat/completions`.
+  - Authentication: bearer API key from `GROQ_API_KEY`.
+  - Model: `openai/gpt-oss-20b` by default, configurable through `GROQ_MODEL`.
+- **Google Gemini** — `generateContent` method.
+  - Endpoint:
+    `POST https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent`.
+  - Authentication: `x-goog-api-key` header with the key from `GEMINI_API_KEY`.
+  - Model: `gemini-3.5-flash-lite` by default, configurable through `GEMINI_MODEL`.
+- Per-request timeouts: `GROQ_TIMEOUT_SECONDS` and `GEMINI_TIMEOUT_SECONDS` (default `30`).
 - Do not assume that free access or quotas are guaranteed.
-- Keep provider-specific integration isolated for V2.
+- Keep provider-specific integration isolated behind the adapter interface so V2 can add
+  fallback.
 
 ## Configuration and Secrets
 - Store credentials in backend environment variables.

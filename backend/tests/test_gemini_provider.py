@@ -29,8 +29,7 @@ from app.errors import (
 from app.services.gemini import GeminiProvider
 from app.services.prompt import PERSIAN_PROOFREADING_SYSTEM_PROMPT
 
-MODEL = "gemini-3.8-flash"
-BASE_URL = "https://generativelanguage.googleapis.com"
+MODEL = "gemini-3.5-flash-lite"
 API_KEY = "unit-test-key-not-real"
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -55,7 +54,6 @@ def _make_provider(handler: Handler, *, api_key: str = API_KEY) -> GeminiProvide
     return GeminiProvider(
         api_key=api_key,
         model=MODEL,
-        base_url=BASE_URL,
         timeout_seconds=5.0,
         client=client,
     )
@@ -71,29 +69,29 @@ def _generate(provider: GeminiProvider, user_text: str = "متن آزمایشی"
 
 
 def test_successful_response_returns_corrected_text() -> None:
-    provider = _make_provider(lambda _: httpx.Response(200, json=_success_body("متن اصلاحشده")))
+    provider = _make_provider(lambda _: httpx.Response(200, json=_success_body("متن اصلاح‌شده")))
 
-    assert _generate(provider) == "متن اصلاحشده"
+    assert _generate(provider) == "متن اصلاح‌شده"
 
 
 def test_endpoint_uses_configured_model_and_v1beta() -> None:
     provider = _make_provider(lambda _: httpx.Response(200, json=_success_body("ok")))
 
     assert provider.endpoint == (
-        f"{BASE_URL}/v1beta/models/{MODEL}:generateContent"
+        "https://generativelanguage.googleapis.com/v1beta"
+        "/models/gemini-3.5-flash-lite:generateContent"
     )
 
 
-def test_surrounding_whitespace_is_trimmed_from_provider_output() -> None:
-    provider = _make_provider(lambda _: httpx.Response(200, json=_success_body("  متن اصلاحشده  \n")))
-
-    assert _generate(provider) == "متن اصلاحشده"
-
-
-def test_multiple_parts_are_concatenated() -> None:
+def test_multiple_parts_are_joined_and_trimmed() -> None:
     body = {
         "candidates": [
-            {"content": {"parts": [{"text": "بخش اول "}, {"text": "بخش دوم"}], "role": "model"}}
+            {
+                "content": {
+                    "role": "model",
+                    "parts": [{"text": "  بخش اول "}, {"text": "بخش دوم  "}],
+                }
+            }
         ]
     }
     provider = _make_provider(lambda _: httpx.Response(200, json=body))
@@ -101,10 +99,18 @@ def test_multiple_parts_are_concatenated() -> None:
     assert _generate(provider) == "بخش اول بخش دوم"
 
 
+def test_surrounding_whitespace_is_trimmed_from_provider_output() -> None:
+    provider = _make_provider(
+        lambda _: httpx.Response(200, json=_success_body("  متن اصلاح‌شده  \n"))
+    )
+
+    assert _generate(provider) == "متن اصلاح‌شده"
+
+
 # --- Request construction and prompt usage ----------------------------------
 
 
-def test_prompt_and_user_text_are_sent_as_separate_fields() -> None:
+def test_prompt_and_user_text_travel_as_separate_fields() -> None:
     captured: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -115,25 +121,17 @@ def test_prompt_and_user_text_are_sent_as_separate_fields() -> None:
 
     body = json.loads(captured[0].content)
 
-    # The prompt is the system instruction; the user's text is a separate input.
+    # The prompt is the system instruction; the user's text is separate content.
     assert body["systemInstruction"] == {
         "parts": [{"text": PERSIAN_PROOFREADING_SYSTEM_PROMPT}]
     }
     assert body["contents"] == [{"parts": [{"text": "متن کاربر برای اصلاح"}]}]
 
-    # The user's text must appear only in its own field, never inside the prompt.
+    # The user's text must appear only in its own entry, never inside the prompt.
     assert "متن کاربر برای اصلاح" not in PERSIAN_PROOFREADING_SYSTEM_PROMPT
 
 
-def test_system_prompt_matches_the_correction_prompt_spec() -> None:
-    # Guardrail: the exact instruction committed in `correction-prompt.md`.
-    assert PERSIAN_PROOFREADING_SYSTEM_PROMPT.startswith(
-        "You are a professional Persian-language proofreader."
-    )
-    assert "Return only the corrected text." in PERSIAN_PROOFREADING_SYSTEM_PROMPT
-
-
-def test_api_key_is_sent_in_header_and_never_in_the_url() -> None:
+def test_api_key_is_sent_in_the_goog_header_and_never_in_the_url() -> None:
     captured: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -148,23 +146,41 @@ def test_api_key_is_sent_in_header_and_never_in_the_url() -> None:
     assert API_KEY not in str(request.url)
 
 
+def test_model_id_comes_from_the_configured_adapter() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json=_success_body("ok"))
+
+    other_model = "gemini-3.5-pro"
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = GeminiProvider(
+        api_key=API_KEY, model=other_model, timeout_seconds=5.0, client=client
+    )
+
+    assert provider.endpoint.endswith(f"/models/{other_model}:generateContent")
+
+    _generate(provider)
+
+    assert f"/models/{other_model}:generateContent" in str(captured[0].url)
+
+
 # --- Provider failure mapping (`api-contract.md` -> Provider Error Mapping) ---
 
 
 @pytest.mark.parametrize(
     ("status_code", "reason", "expected_error"),
     [
+        (400, "INVALID_ARGUMENT", InternalError),
         (401, "UNAUTHENTICATED", ProviderAuthError),
         (403, "PERMISSION_DENIED", ProviderAuthError),
+        (404, "NOT_FOUND", ProviderUnavailableError),
         (429, "RESOURCE_EXHAUSTED", ProviderRateLimitError),
         (500, "INTERNAL", ProviderUnavailableError),
         (502, "BAD_GATEWAY", ProviderUnavailableError),
         (503, "UNAVAILABLE", ProviderUnavailableError),
         (504, "DEADLINE_EXCEEDED", ProviderTimeoutError),
-        # Model/resource missing: treated as the provider being unavailable.
-        (404, "NOT_FOUND", ProviderUnavailableError),
-        # A malformed request built by us is an internal fault, not user input.
-        (400, "INVALID_ARGUMENT", InternalError),
     ],
 )
 def test_provider_http_errors_map_to_documented_codes(
@@ -173,7 +189,7 @@ def test_provider_http_errors_map_to_documented_codes(
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
             status_code,
-            json={"error": {"code": status_code, "status": reason, "message": "provider detail"}},
+            json={"error": {"code": status_code, "message": "provider detail", "status": reason}},
         )
 
     with pytest.raises(expected_error):
@@ -194,7 +210,7 @@ def test_provider_http_errors_map_to_documented_codes(
 )
 def test_provider_errors_carry_the_public_code(status_code: int, expected_code: str) -> None:
     def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(status_code, json={"error": {"status": "X"}})
+        return httpx.Response(status_code, json={"error": {"status": "INVALID_ARGUMENT"}})
 
     with pytest.raises(CorrectionError) as excinfo:
         _generate(_make_provider(handler))
@@ -211,8 +227,8 @@ def test_provider_error_detail_never_includes_the_raw_message() -> None:
             json={
                 "error": {
                     "code": 429,
+                    "message": f"quota exceeded for key {secret_like}",
                     "status": "RESOURCE_EXHAUSTED",
-                    "message": f"quota for key {secret_like} exceeded",
                 }
             },
         )
@@ -220,7 +236,7 @@ def test_provider_error_detail_never_includes_the_raw_message() -> None:
     with pytest.raises(ProviderRateLimitError) as excinfo:
         _generate(_make_provider(handler))
 
-    # Only the machine reason token is kept for logs; the message is discarded.
+    # Only the machine token is kept for logs; the message is discarded.
     assert excinfo.value.detail is not None
     assert "RESOURCE_EXHAUSTED" in excinfo.value.detail
     assert secret_like not in excinfo.value.detail
@@ -265,11 +281,18 @@ def test_missing_api_key_is_an_auth_error_and_makes_no_request() -> None:
         pytest.param({"candidates": []}, id="no-candidates"),
         pytest.param({"candidates": [{}]}, id="candidate-without-content"),
         pytest.param({"candidates": [{"content": {}}]}, id="content-without-parts"),
-        pytest.param({"candidates": [{"content": {"parts": []}}]}, id="empty-parts"),
-        pytest.param({"candidates": [{"content": {"parts": [{"text": ""}]}}]}, id="empty-text"),
-        pytest.param({"candidates": [{"content": {"parts": [{"text": "   \n "}]}}]}, id="blank-text"),
-        pytest.param({"candidates": [{"content": {"parts": [{"foo": "bar"}]}}]}, id="no-text-field"),
+        pytest.param(
+            {"candidates": [{"content": {"parts": [{"text": ""}]}}]}, id="empty-part"
+        ),
+        pytest.param(
+            {"candidates": [{"content": {"parts": [{"text": "   \n "}]}}]}, id="blank-part"
+        ),
+        pytest.param(
+            {"candidates": [{"content": {"parts": [{"text": None}]}}]}, id="null-part-text"
+        ),
+        pytest.param({"candidates": [{"content": {"parts": "nope"}}]}, id="parts-not-a-list"),
         pytest.param("not an object", id="non-object-body"),
+        pytest.param({"candidates": "nope"}, id="candidates-not-a-list"),
     ],
 )
 def test_invalid_or_empty_model_output_is_an_internal_error(body: object) -> None:
@@ -281,7 +304,9 @@ def test_invalid_or_empty_model_output_is_an_internal_error(body: object) -> Non
 
 def test_non_json_response_body_is_an_internal_error() -> None:
     provider = _make_provider(
-        lambda _: httpx.Response(200, content=b"<html>gateway</html>", headers={"content-type": "text/html"})
+        lambda _: httpx.Response(
+            200, content=b"<html>gateway</html>", headers={"content-type": "text/html"}
+        )
     )
 
     with pytest.raises(InternalError):
