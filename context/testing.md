@@ -12,7 +12,8 @@
 - A text of exactly 1000 characters is accepted if otherwise valid.
 - A text of 1001 characters is rejected with `TEXT_TOO_LONG`.
 - The configured limit can be changed through backend configuration.
-- Provider timeouts, authentication errors, rate limits, and server errors map to the documented error codes.
+- Provider timeouts, authentication errors, rate limits, and server errors are classified internally by the adapters (unit-tested per provider) and surfaced by the endpoint as the single documented `503 PROVIDER_UNAVAILABLE`; raw provider detail never reaches the client.
+- Every error response, including unknown routes (`404 NOT_FOUND`) and unsupported methods (`405 METHOD_NOT_ALLOWED`), uses the `{error, message}` envelope; the OpenAPI document lists only the responses the API actually returns (no `422`).
 - Invalid or empty provider responses do not produce false success.
 - Fallback: a successful Groq call never reaches Gemini; every provider-related Groq failure (quota/rate limit, authentication, timeout, connection failure, server error, invalid/empty response) is retried once with Gemini, which returns the correction; each provider is attempted at most once.
 - Fallback: when both providers fail the endpoint returns the generic `503 PROVIDER_UNAVAILABLE` without exposing keys, provider response bodies, or internal detail, in the response or in the logs.

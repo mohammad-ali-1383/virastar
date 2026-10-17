@@ -26,6 +26,7 @@ documented response/error formats) behind two provider adapters, **Groq** as the
 │   └── requirements-dev.txt # test dependencies (pinned)
 ├── frontend/                # React + TypeScript + Vite app
 │   ├── src/
+│   ├── .env.example         # frontend-only template (VITE_API_BASE_URL)
 │   ├── Dockerfile
 │   └── package.json
 ├── docker-compose.yml       # local development stack
@@ -56,11 +57,19 @@ is still honored and overrides the root file if you prefer to keep a local copy.
 
 | Workflow | `.env` location | How it is loaded |
 |---|---|---|
-| Docker Compose | `<repo root>/.env` | `docker-compose.yml` → `env_file: .env` |
+| Docker Compose (backend) | `<repo root>/.env` | `docker-compose.yml` → `env_file: .env` |
 | Local Uvicorn (`cd backend`) | `<repo root>/.env` (or `backend/.env`) | `backend/app/config.py` reads both |
+| Local Vite (`cd frontend`) | `frontend/.env` (from `frontend/.env.example`) | Vite loads `VITE_*` at dev-server start |
 
 Real environment variables always win over `.env` values, so a platform-provided secret (for
-example in production) is never overridden by a stray file.
+example in production) is never overridden by a stray file. Docker Compose overrides the backend
+environment only for the container-specific log path
+(`CORRECTION_LOG_PATH=/app/logs/corrections.jsonl`, backed by the `./logs` mount), and sets the
+frontend's `VITE_API_BASE_URL`; both are documented in `docker-compose.yml`. Every other setting
+in the table below comes from the root `.env` in both backend workflows, so `MAX_TEXT_LENGTH`,
+`CORS_ORIGINS`, and the provider settings behave the same in Compose and in a local Uvicorn run.
+In the Compose workflow the injected `VITE_API_BASE_URL` wins over `frontend/.env`, because Vite
+gives real environment variables precedence.
 
 ### Option A — Docker Compose (recommended)
 
@@ -97,8 +106,11 @@ npm run dev
 ## API
 
 `POST /api/v1/correct` accepts `{"text": "...", "store_for_evaluation": false}` and returns
-`{"corrected_text": "..."}`. Errors use `{"error": "CODE", "message": "..."}` with the codes and
-statuses listed in `context/api-contract.md`.
+`{"corrected_text": "..."}`. Every error uses `{"error": "CODE", "message": "..."}` with the codes
+and statuses listed in `context/api-contract.md`: validation is `400`, unknown routes and methods
+are `404 NOT_FOUND` / `405 METHOD_NOT_ALLOWED`, unexpected failures are `500 INTERNAL_ERROR`, and
+**every** provider failure — rate limit, authentication, timeout, unavailable, or unusable
+response — is the single `503 PROVIDER_UNAVAILABLE` (never `429`, `502`, or `504`).
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/correct \
@@ -143,7 +155,7 @@ All tests mock the providers: no API key is needed and no request leaves the mac
 
 | Variable | Scope | Default | Purpose |
 |---|---|---|---|
-| `APP_ENV` | backend | `development` | Runtime environment name |
+| `APP_ENV` | backend | `development` | Runtime environment label (read into settings; changes no behavior) |
 | `MAX_TEXT_LENGTH` | backend | `1000` | Maximum accepted text length |
 | `CORS_ORIGINS` | backend | dev origins | JSON array of allowed browser origins |
 | `GROQ_API_KEY` | backend | *(empty)* | Groq API key (secret); Groq is always tried first |
@@ -154,6 +166,10 @@ All tests mock the providers: no API key is needed and no request leaves the mac
 | `GEMINI_TIMEOUT_SECONDS` | backend | `30` | Per-request Gemini timeout |
 | `CORRECTION_LOG_PATH` | backend | `<repo root>/logs/corrections.jsonl` | Consented evaluation log (JSON Lines) |
 | `VITE_API_BASE_URL` | frontend | `http://localhost:8000` | Backend base URL used by the browser |
+
+`MAX_TEXT_LENGTH` is enforced by the backend only. The website keeps its own fixed
+1000-character counter (`frontend/src/api.ts`), so raising the backend limit allows longer API
+requests while the page still blocks input at 1000 characters; the server remains the authority.
 
 Secrets live only in backend environment variables. Never place credentials in frontend
 code or in `.env` files that are committed. Each key is sent to its own provider in a request header

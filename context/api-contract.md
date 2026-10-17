@@ -28,24 +28,36 @@ HTTP `200 OK`
     }
 
 ## Error Response
-All errors must use a consistent JSON structure.
+Every error — validation, unknown route, unsupported method, provider failure, and unexpected
+failure — uses one JSON structure with `Content-Type: application/json`.
 
     {
       "error": "TEXT_TOO_LONG",
       "message": "متن واردشده بیش از حداکثر مجاز است."
     }
 
+Exactly `error` and `message` are present. `error` is a stable machine code and `message` is a safe
+Persian message. No `detail` field, stack trace, provider payload, internal exception text, or
+credential is ever returned.
+
 ## Error Codes
 
 | Code | HTTP Status | Meaning |
 |---|---:|---|
-| `INVALID_INPUT` | 400 | Missing, empty, or invalid text |
+| `INVALID_INPUT` | 400 | Missing, empty, malformed, or wrong-type input (including a non-boolean consent flag) |
 | `TEXT_TOO_LONG` | 400 | Text exceeds the configured limit |
-| `PROVIDER_UNAVAILABLE` | 503 | LLM provider is unavailable |
-| `PROVIDER_TIMEOUT` | 504 | LLM request timed out |
-| `PROVIDER_RATE_LIMIT` | 429 | Provider rate or quota limit reached |
-| `PROVIDER_AUTH_ERROR` | 502 | Provider authentication failed |
+| `NOT_FOUND` | 404 | Unknown route |
+| `METHOD_NOT_ALLOWED` | 405 | Method not supported by the route |
 | `INTERNAL_ERROR` | 500 | Unexpected internal error |
+| `PROVIDER_UNAVAILABLE` | 503 | No provider produced a usable correction |
+| `HTTP_ERROR` | original framework status | Any other framework-level HTTP error, same envelope |
+
+Provider-specific classifications — rate/quota limit, authentication, timeout, connection failure,
+server error, and unusable response — are **internal** to the adapters and correction service. The
+endpoint never returns `429`, `502`, or `504`: every provider failure is reported as the single
+`503 PROVIDER_UNAVAILABLE` (see Provider Error Mapping). Client-level rate limiting is not
+implemented in V1, so the API itself has no rate-limit response. FastAPI's default `422` is also
+never returned; validation failures are `400 INVALID_INPUT` or `400 TEXT_TOO_LONG`.
 
 ## Validation
 - `text` must be a non-empty string after trimming.
@@ -54,6 +66,8 @@ All errors must use a consistent JSON structure.
 - Reject malformed JSON and invalid input.
 - Validate the length in the backend; frontend validation is only for user experience.
 - Use a consistent error structure.
+- Validation failures are `400 INVALID_INPUT` (or `400 TEXT_TOO_LONG`); FastAPI's default `422`
+  response is replaced and never returned.
 - Never expose stack traces, API keys, credentials, or raw internal provider errors.
 
 ## Behavior
@@ -67,6 +81,10 @@ All errors must use a consistent JSON structure.
 - Return HTTP 200 only when correction succeeds, using the text of whichever provider succeeded.
 - When both providers fail, return `503 PROVIDER_UNAVAILABLE` with the generic message: the client
   is never told which provider failed or why.
+- The same generic `503` is used for every provider failure category (quota/rate limit,
+  authentication, timeout, connection failure, server error, and unusable response).
+- Unknown routes and unsupported methods use the same error structure: `404 NOT_FOUND` and
+  `405 METHOD_NOT_ALLOWED` (the framework's `Allow` header is preserved on `405`).
 - Never fabricate corrected text when the provider fails.
 - Only a successful correction can be stored for evaluation, and only when the request consented:
   the record names the provider and model that actually succeeded, so a Groq-to-Gemini fallback is
@@ -78,8 +96,15 @@ All errors must use a consistent JSON structure.
 - Keep the public endpoint and response format stable in V2.
 - The Telegram bot in V3 must use the same backend API.
 - Clients must not need to know which provider is active.
+- Every error keeps the `{error, message}` envelope, including `404` and `405`, so clients can
+  handle failures uniformly.## Provider Error Mapping
+Map known provider errors to the internal classifications in the adapters (quota/rate limit,
+authentication, timeout, connection failure, server error, unusable response). Those
+classifications drive the fallback decision and the sanitized server log; raw provider messages are
+never exposed to clients.
 
-## Provider Error Mapping
-Map known provider errors to the public error codes above. Do not expose raw provider error messages to clients. Use `PROVIDER_RATE_LIMIT` only when the provider's rate/quota limit is identified; use `429` for that public error.
-
-The per-provider mapping stays in the adapters (an exhaustion, authentication, timeout, or server error raises the matching internal error). Because the endpoint retries once with the fallback provider and returns `PROVIDER_UNAVAILABLE` when both attempts fail, the provider-specific codes below are not what a client normally sees: the successful provider's correction is returned, or the single generic `503`.
+The public mapping is deliberately single: whichever classification was raised and whichever
+provider failed, the endpoint returns `503 PROVIDER_UNAVAILABLE` with the documented generic
+message unless one provider produced a usable correction. The provider-specific codes
+(`PROVIDER_RATE_LIMIT`, `PROVIDER_AUTH_ERROR`, `PROVIDER_TIMEOUT`) are therefore internal and are
+never returned as `429`, `502`, or `504`.

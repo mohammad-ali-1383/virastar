@@ -54,6 +54,21 @@ def _body(store: bool) -> dict[str, object]:
     return {"text": PERSIAN_TEXT, "store_for_evaluation": store}
 
 
+def _file_signature(path: Path) -> tuple[int, int] | None:
+    """Size and modification time of ``path``, or ``None`` when it is absent.
+
+    Used to prove a real evaluation log is left untouched without reading it:
+    the stored text is user content and must not be opened by the tests. A real
+    log may legitimately exist once the service has been used with consent, so
+    the guard compares its state rather than requiring it to be missing.
+    """
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return (stat.st_size, stat.st_mtime_ns)
+
+
 # The deployment's configured log file (the autouse fixture must keep tests off it).
 REPOSITORY_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "corrections.jsonl"
 
@@ -63,13 +78,21 @@ def test_tests_never_write_to_the_repository_log(
 ) -> None:
     # Guard for the whole suite: even a consented request through the endpoint
     # writes to the temporary path, never to a real `logs/corrections.jsonl`.
+    #
+    # The real file is not required to be absent: a deployment that has served
+    # a consented request owns one, and deleting it is not a test's job. What
+    # must hold is that the request is recorded in the temporary path and the
+    # real path is byte-for-byte untouched (same size and mtime).
     assert settings.correction_log_path == correction_log_path
     assert settings.correction_log_path != REPOSITORY_LOG_PATH
+
+    repository_before = _file_signature(REPOSITORY_LOG_PATH)
 
     client.post(CORRECT_URL, json=_body(True))
 
     assert correction_log_path.exists()
-    assert not REPOSITORY_LOG_PATH.exists()
+    assert len(_rows(correction_log_path)) == 1
+    assert _file_signature(REPOSITORY_LOG_PATH) == repository_before
 
 
 # --- Consent given ----------------------------------------------------------
@@ -222,7 +245,8 @@ def test_declined_request_with_a_failing_provider_still_writes_nothing(
 
     response = client.post(CORRECT_URL, json=_body(True))
 
-    assert response.status_code == 502
+    # Every provider failure is the generic 503 (`api-contract.md`).
+    assert response.status_code == 503
     # Consent was given, but there is no correction to evaluate: nothing stored.
     assert not correction_log_path.exists()
 
@@ -320,7 +344,7 @@ def test_provider_failure_leaves_the_log_untouched(
 
     response = client.post(CORRECT_URL, json=_body(True))
 
-    assert response.status_code == 502
+    assert response.status_code == 503
     assert "corrected_text" not in response.json()
     assert not correction_log_path.exists()
 

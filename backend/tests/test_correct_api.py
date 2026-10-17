@@ -5,15 +5,17 @@ from __future__ import annotations
 import json
 
 import pytest
+from fastapi import HTTPException
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.errors import (
+    HTTP_ERROR,
     INTERNAL_ERROR,
     INVALID_INPUT,
-    PROVIDER_AUTH_ERROR,
-    PROVIDER_RATE_LIMIT,
-    PROVIDER_TIMEOUT,
+    METHOD_NOT_ALLOWED,
+    NOT_FOUND,
     PROVIDER_UNAVAILABLE,
     TEXT_TOO_LONG,
     ProviderAuthError,
@@ -21,6 +23,7 @@ from app.errors import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
+from app.main import app
 from app.schemas import CorrectRequest
 from tests.conftest import StubCorrectionService
 
@@ -70,6 +73,19 @@ def test_correction_route_is_registered(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
 
     assert "post" in paths["/api/v1/correct"]
+
+
+def test_openapi_documents_only_the_responses_the_api_returns(
+    client: TestClient,
+) -> None:
+    schema = client.get("/openapi.json").json()
+    responses = schema["paths"]["/api/v1/correct"]["post"]["responses"]
+
+    # 422 is never returned: validation errors are 400 INVALID_INPUT.
+    assert set(responses) == {"200", "400", "500", "503"}
+    schemas = schema.get("components", {}).get("schemas", {})
+    assert "HTTPValidationError" not in schemas
+    assert "ValidationError" not in schemas
 
 
 def test_health_endpoint_still_works(client: TestClient) -> None:
@@ -230,30 +246,33 @@ def test_limit_is_configurable(
 # --- Provider failures ------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("error", "expected_status", "expected_code"),
-    [
-        (ProviderUnavailableError, 503, PROVIDER_UNAVAILABLE),
-        (ProviderTimeoutError, 504, PROVIDER_TIMEOUT),
-        (ProviderRateLimitError, 429, PROVIDER_RATE_LIMIT),
-        (ProviderAuthError, 502, PROVIDER_AUTH_ERROR),
-    ],
-)
-def test_provider_failures_map_to_documented_errors(
+# Every provider classification the correction service can raise maps to the
+# same public response (`api-contract.md`): one generic 503. The specific class
+# is preserved only in the sanitized server log.
+PROVIDER_ERRORS = [
+    ProviderUnavailableError,
+    ProviderTimeoutError,
+    ProviderRateLimitError,
+    ProviderAuthError,
+]
+
+# Documented message for PROVIDER_UNAVAILABLE (`api-contract.md`).
+SERVICE_ERROR_MESSAGE = "سرویس اصلاح متن در حال حاضر در دسترس نیست."
+
+
+@pytest.mark.parametrize("error", PROVIDER_ERRORS, ids=lambda error: error.__name__)
+def test_every_provider_failure_returns_the_generic_service_error(
     client: TestClient,
     stub_service: StubCorrectionService,
     error: type[Exception],
-    expected_status: int,
-    expected_code: str,
 ) -> None:
     stub_service.error = error("raw provider detail: sk-live-000")
 
     response = client.post(CORRECT_URL, json={"text": PERSIAN_TEXT})
 
-    assert response.status_code == expected_status
+    assert response.status_code == 503
     body = response.json()
-    assert body["error"] == expected_code
-    assert body["message"]
+    assert body == {"error": PROVIDER_UNAVAILABLE, "message": SERVICE_ERROR_MESSAGE}
     # Never fabricate corrected text when the provider fails.
     assert "corrected_text" not in body
     # Raw provider details must not leak into the response.
@@ -289,6 +308,60 @@ def test_unexpected_error_returns_documented_internal_error(
 # --- Error format consistency ----------------------------------------------
 
 
+# --- Framework errors -------------------------------------------------------
+
+
+def test_unknown_route_uses_the_documented_error_structure(client: TestClient) -> None:
+    response = client.get("/api/v1/unknown")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": NOT_FOUND,
+        "message": "مسیر درخواستی یافت نشد.",
+    }
+    # Starlette's `{"detail": ...}` body never reaches the client.
+    assert "detail" not in response.json()
+    assert "Not Found" not in response.text
+
+
+def test_method_not_allowed_uses_the_documented_error_structure(
+    client: TestClient,
+) -> None:
+    response = client.get(CORRECT_URL)
+
+    assert response.status_code == 405
+    assert response.json() == {
+        "error": METHOD_NOT_ALLOWED,
+        "message": "این روش درخواست برای این مسیر پشتیبانی نمی‌شود.",
+    }
+    # The framework's Allow header is part of the error response contract.
+    assert "POST" in response.headers["allow"]
+
+
+def test_other_framework_http_errors_use_the_generic_envelope(
+    client: TestClient,
+) -> None:
+    def teapot() -> None:
+        raise HTTPException(status_code=418, detail="internal detail: sk-live-000")
+
+    # A temporary route exercises the catch-all handler without changing the
+    # application's real routes; it is removed even if the request fails.
+    route = APIRoute("/__test__/teapot", teapot, methods=["GET"])
+    app.router.routes.append(route)
+    try:
+        response = client.get("/__test__/teapot")
+    finally:
+        app.router.routes.remove(route)
+
+    assert response.status_code == 418
+    assert response.json() == {
+        "error": HTTP_ERROR,
+        "message": "درخواست قابل پردازش نبود.",
+    }
+    assert "internal detail" not in response.text
+    assert "sk-live-000" not in response.text
+
+
 def test_every_error_uses_the_documented_structure(
     client: TestClient, stub_service: StubCorrectionService
 ) -> None:
@@ -299,6 +372,8 @@ def test_every_error_uses_the_documented_structure(
         client.post(CORRECT_URL, json={"text": "ا" * 1001}),
         client.post(CORRECT_URL, content="{not valid json", headers={"Content-Type": "application/json"}),
         client.post(CORRECT_URL, json={"text": PERSIAN_TEXT}),
+        client.get("/api/v1/unknown"),
+        client.get(CORRECT_URL),
     ]
 
     for response in responses:

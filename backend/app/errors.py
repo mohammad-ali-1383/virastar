@@ -1,21 +1,28 @@
 """Public error contract for the API.
 
-Every error response uses the structure documented in `api-contract.md`::
+Every error response — validation, unknown route, unsupported method, provider
+failure, or unexpected failure — uses the single structure documented in
+`api-contract.md`::
 
     {"error": "ERROR_CODE", "message": "..."}
 
 :class:`CorrectionError` keeps the public ``message`` and the internal
 ``detail`` in separate attributes, so provider errors and other internal
-information are never serialised into a response.
+information are never serialised into a response. The provider-specific codes
+are internal classifications used for the fallback decision and for sanitized
+logs; the endpoint reports every provider failure as ``503
+PROVIDER_UNAVAILABLE`` (`PROVIDER_FAILURE_CODES`).
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +30,37 @@ logger = logging.getLogger(__name__)
 INVALID_INPUT = "INVALID_INPUT"
 TEXT_TOO_LONG = "TEXT_TOO_LONG"
 PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+INTERNAL_ERROR = "INTERNAL_ERROR"
+NOT_FOUND = "NOT_FOUND"
+METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
+HTTP_ERROR = "HTTP_ERROR"
+
+# Internal provider classifications. Adapters raise the matching
+# :class:`CorrectionError` so the correction service can decide whether to fall
+# back and can log a sanitized category; clients never receive these codes.
 PROVIDER_TIMEOUT = "PROVIDER_TIMEOUT"
 PROVIDER_RATE_LIMIT = "PROVIDER_RATE_LIMIT"
 PROVIDER_AUTH_ERROR = "PROVIDER_AUTH_ERROR"
-INTERNAL_ERROR = "INTERNAL_ERROR"
+
+# The endpoint's public contract for provider failures: whichever class was
+# raised and whichever attempt failed, the client gets one generic 503.
+PROVIDER_FAILURE_CODES = frozenset(
+    {
+        PROVIDER_UNAVAILABLE,
+        PROVIDER_TIMEOUT,
+        PROVIDER_RATE_LIMIT,
+        PROVIDER_AUTH_ERROR,
+    }
+)
+
+# Framework-level HTTP errors (unknown path, unsupported method). The messages
+# are fixed and Persian, and the original status and headers are preserved, so
+# no ``detail`` from Starlette or a dependency can reach the client.
+_HTTP_ERROR_RESPONSES: dict[int, tuple[str, str]] = {
+    404: (NOT_FOUND, "مسیر درخواستی یافت نشد."),
+    405: (METHOD_NOT_ALLOWED, "این روش درخواست برای این مسیر پشتیبانی نمی‌شود."),
+}
+_HTTP_ERROR_FALLBACK_MESSAGE = "درخواست قابل پردازش نبود."
 
 
 class CorrectionError(Exception):
@@ -104,26 +138,58 @@ class InternalError(CorrectionError):
     message = "خطای داخلی سرور رخ داد."
 
 
-def error_response(code: str, message: str, http_status: int) -> JSONResponse:
-    """Build the documented error body."""
+def error_response(
+    code: str,
+    message: str,
+    http_status: int,
+    headers: Mapping[str, str] | None = None,
+) -> JSONResponse:
+    """Build the documented error body.
+
+    ``headers`` carries framework headers that belong to the error (for example
+    ``Allow`` on a 405); it never contains provider or credential material.
+    """
     return JSONResponse(
         status_code=http_status,
         content={"error": code, "message": message},
+        headers=headers,
     )
 
 
 def register_exception_handlers(app: FastAPI) -> None:
     """Guarantee the documented error format for every failure.
 
-    FastAPI's default validation response (``422`` with a ``detail`` list) and
-    its bare ``500`` are both replaced by the contract structure.
+    FastAPI's default validation response (``422`` with a ``detail`` list), its
+    ``{"detail": ...}`` 404/405 bodies, and its bare ``500`` are all replaced by
+    the contract structure.
     """
 
     @app.exception_handler(CorrectionError)
     async def handle_correction_error(_: Request, exc: CorrectionError) -> JSONResponse:
         if exc.detail:
             logger.warning("Correction error %s: %s", exc.code, exc.detail)
+
+        # Provider failures are one generic 503 on the wire (`api-contract.md`),
+        # even if a service implementation raises an adapter classification
+        # directly. The specific code is already in the sanitized log above.
+        if exc.code in PROVIDER_FAILURE_CODES:
+            return error_response(
+                ProviderUnavailableError.code,
+                ProviderUnavailableError.message,
+                ProviderUnavailableError.http_status,
+            )
+
         return error_response(exc.code, exc.message, exc.http_status)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def handle_http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+        # Unknown route (404) and unsupported method (405) keep their status and
+        # framework headers but lose Starlette's ``detail`` body. Any other
+        # framework HTTP error keeps its status too, with a generic public code.
+        code, message = _HTTP_ERROR_RESPONSES.get(
+            exc.status_code, (HTTP_ERROR, _HTTP_ERROR_FALLBACK_MESSAGE)
+        )
+        return error_response(code, message, exc.status_code, headers=exc.headers)
 
     @app.exception_handler(RequestValidationError)
     async def handle_request_validation_error(

@@ -17,13 +17,14 @@ from app.services.correction_log import CorrectionLogStore
 
 router = APIRouter(prefix="/api/v1", tags=["correction"])
 
+# The responses this operation documents (`api-contract.md` → Error Codes).
+# Provider failures of every category (rate limit, authentication, timeout,
+# unavailable) reach the client as the single 503 below, so 429/502/504 are not
+# part of this operation's public responses.
 ERROR_RESPONSES = {
     400: {"model": ErrorResponse, "description": "INVALID_INPUT or TEXT_TOO_LONG"},
-    429: {"model": ErrorResponse, "description": "PROVIDER_RATE_LIMIT"},
-    502: {"model": ErrorResponse, "description": "PROVIDER_AUTH_ERROR"},
-    503: {"model": ErrorResponse, "description": "PROVIDER_UNAVAILABLE"},
-    504: {"model": ErrorResponse, "description": "PROVIDER_TIMEOUT"},
     500: {"model": ErrorResponse, "description": "INTERNAL_ERROR"},
+    503: {"model": ErrorResponse, "description": "PROVIDER_UNAVAILABLE"},
 }
 
 
